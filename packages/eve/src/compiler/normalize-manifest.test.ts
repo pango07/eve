@@ -753,10 +753,8 @@ describe("compileAgentManifest source graph", () => {
         loadNamespace: async () => ({
           default: slackChannel({
             botName: "Support agent",
-            appManifest: {
-              botEvents: ["message.channels"],
-              botScopes: ["channels:history"],
-            },
+            botEvents: ["message.channels"],
+            botScopes: ["channels:history"],
           }),
         }),
       },
