@@ -32,7 +32,8 @@ function respond(request: MockModelRequest): MockModelResponse | string {
   if (message.startsWith("CHILD-TASK-EXCLUSIVITY-LATER ")) {
     return laterBusyWorker(request, message);
   }
-  if (message.startsWith("TASK-AUTH-SNAPSHOT-BOB ")) return "TASK-AUTH-SNAPSHOT-BOB-ACK";
+  if (message === "TASK-AUTH-SNAPSHOT-ROOT") return "TASK-AUTH-SNAPSHOT-ROOT-ACK";
+  if (message === "TASK-AUTH-SNAPSHOT-LATER") return "TASK-AUTH-SNAPSHOT-LATER-ACK";
   if (message.startsWith("TASK-AUTH-SNAPSHOT ")) return startAuthSnapshotTask(request, message);
   if (message.startsWith("TASK-A2-CHILD-FAILURE-VERIFY ")) {
     return inspectTerminalTask(

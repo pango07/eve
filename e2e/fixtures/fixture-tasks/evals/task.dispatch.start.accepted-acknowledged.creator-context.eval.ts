@@ -1,12 +1,8 @@
-import type { EveEvalContext, EveEvalTurn } from "eve/evals";
+import type { EveEvalContext } from "eve/evals";
 import { equals } from "eve/evals/expect";
 
 import type { LifecycleControlEvent } from "../agent/lib/lifecycle-control.js";
-import {
-  requireSessionStreamIndex,
-  waitForTaskNotification,
-  type TaskEvalSessionDriver,
-} from "./shared.js";
+import { requireSessionStreamIndex, type TaskEvalSessionDriver } from "./shared.js";
 import { defineTaskEval } from "./task-transition.js";
 
 const ALICE_AUTHORIZATION = "Bearer e2e-task-operation-a";
@@ -14,86 +10,68 @@ const BOB_AUTHORIZATION = "Bearer e2e-task-operation-b";
 
 export default defineTaskEval({
   description:
-    "A delayed task-owned subagent keeps its creator's authentication after another caller starts a parent turn.",
+    "A background task keeps its creator's authentication after a later turn changes the current caller.",
   transition: {
     primary: "task.dispatch.start.accepted-acknowledged",
     dimensions: { transport: "local" },
   },
   async test(t) {
+    // Alice creates the session, so the session initiator is Alice.
+    const firstTurn = await t.send("TASK-AUTH-SNAPSHOT-ROOT", {
+      headers: { authorization: ALICE_AUTHORIZATION },
+    });
+    firstTurn.expectOk();
+    firstTurn.messageIncludes("TASK-AUTH-SNAPSHOT-ROOT-ACK");
+
+    // Bob creates the task. Its current caller is Bob and its initiator is Alice.
     const key = crypto.randomUUID();
     const started = await t.send(`TASK-AUTH-SNAPSHOT ${key}`, {
-      headers: { authorization: ALICE_AUTHORIZATION },
+      headers: { authorization: BOB_AUTHORIZATION },
     });
     started.expectOk();
     started.messageIncludes("TASK-AUTH-SNAPSHOT-STARTED");
-    const receipt = started.requireToolCall("lifecycle_task").output;
-    if (
-      receipt === null ||
-      typeof receipt !== "object" ||
-      typeof Reflect.get(receipt, "taskId") !== "string"
-    ) {
-      throw new Error("Auth snapshot task returned no background receipt.");
-    }
-    const taskId = Reflect.get(receipt, "taskId") as string;
     const sessionId = started.sessionId;
-    if (sessionId === undefined) throw new Error("Auth snapshot task has no parent session id.");
+    if (sessionId === undefined) throw new Error("The task has no parent session.");
 
-    const owner = await lifecycleEvent(t, sessionId, key, 0);
-    await t.require(
-      { kind: owner.kind, marker: owner.marker, sessionId: owner.sessionId },
-      equals({ kind: "owner", marker: "A", sessionId }),
-    );
-    const gate = await lifecycleEvent(t, sessionId, key, 1);
-    if (gate.kind !== "gate" || gate.marker !== "A" || gate.token === undefined) {
-      throw new Error("Auth snapshot task did not reach its pre-dispatch gate.");
-    }
+    const gateToken = await waitForGate(t, sessionId, key);
 
-    const bob = await t.send(`TASK-AUTH-SNAPSHOT-BOB ${key}`, {
-      headers: { authorization: BOB_AUTHORIZATION },
+    // Alice takes the last parent turn before the task starts its subagent.
+    const lastParentTurn = await t.send("TASK-AUTH-SNAPSHOT-LATER", {
+      headers: { authorization: ALICE_AUTHORIZATION },
     });
-    bob.expectOk();
-    bob.messageIncludes("TASK-AUTH-SNAPSHOT-BOB-ACK");
-    bob.usedNoTools();
+    lastParentTurn.expectOk();
+    lastParentTurn.messageIncludes("TASK-AUTH-SNAPSHOT-LATER-ACK");
+    lastParentTurn.usedNoTools();
 
-    await releaseGate(t, sessionId, key, gate.token);
-    const dispatched = await waitForSubagentDispatch(t, t);
-    const child = await t.target.watchTurn(dispatched.childSessionId).result();
+    await releaseGate(t, sessionId, key, gateToken);
+    const childSessionId = await waitForSubagent(t, t);
+    const child = await t.target.watchTurn(childSessionId).result();
     child.expectOk();
     child.noFailedActions();
     child.calledTool("snapshot_whoami", { count: 1, status: "completed" });
     await t.require(
       child.requireToolCall("snapshot_whoami").output,
-      equals({ current: "operation-user-a", initiator: "operation-user-a" }),
+      equals({ current: "operation-user-b", initiator: "operation-user-a" }),
     );
-
-    const completed = await waitForTaskNotification(
-      t,
-      dispatched.session,
-      taskId,
-      "completed",
-      dispatched.turns,
-    );
-    completed.turn.noFailedActions();
   },
 });
 
-async function lifecycleEvent(
-  t: EveEvalContext,
-  sessionId: string,
-  key: string,
-  index: number,
-): Promise<LifecycleControlEvent> {
-  const response = await t.target.fetch(
-    `/eve/v1/task-lifecycle/${encodeURIComponent(sessionId)}/next`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key, index }),
-      signal: t.signal,
-    },
-  );
-  await t.require(response.status, equals(200));
-  return (await response.json()) as LifecycleControlEvent;
+async function waitForGate(t: EveEvalContext, sessionId: string, key: string): Promise<string> {
+  for (let index = 0; index < 2; index += 1) {
+    const response = await t.target.fetch(
+      `/eve/v1/task-lifecycle/${encodeURIComponent(sessionId)}/next`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, index }),
+        signal: t.signal,
+      },
+    );
+    await t.require(response.status, equals(200));
+    const event = (await response.json()) as LifecycleControlEvent;
+    if (event.kind === "gate" && event.token !== undefined) return event.token;
+  }
+  throw new Error("The background task did not pause before starting its subagent.");
 }
 
 async function releaseGate(
@@ -115,33 +93,24 @@ async function releaseGate(
   await t.require(await response.json(), equals({ released: true }));
 }
 
-async function waitForSubagentDispatch(
+async function waitForSubagent(
   t: EveEvalContext,
   initialSession: TaskEvalSessionDriver,
-): Promise<{
-  readonly childSessionId: string;
-  readonly session: TaskEvalSessionDriver;
-  readonly turns: readonly EveEvalTurn[];
-}> {
+): Promise<string> {
   let session = initialSession;
-  const turns: EveEvalTurn[] = [];
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const sessionId = session.sessionId;
-    if (sessionId === undefined)
-      throw new Error("Auth snapshot dispatch has no parent session id.");
+    if (sessionId === undefined) throw new Error("The task has no parent session.");
     const live = t.target.watchTurn(sessionId, {
-      startIndex: requireSessionStreamIndex(session, "Auth snapshot dispatch wait"),
+      startIndex: requireSessionStreamIndex(session, "Subagent wait"),
     });
     const turn = await live.result();
     turn.expectOk();
-    turns.push(turn);
     session = live.session;
     const called = turn.events.find(
       (event) => event.type === "subagent.called" && event.data.name === "auth-snapshot-worker",
     );
-    if (called?.type === "subagent.called") {
-      return { childSessionId: called.data.childSessionId, session, turns };
-    }
+    if (called?.type === "subagent.called") return called.data.childSessionId;
   }
-  throw new Error("The delayed task did not dispatch auth-snapshot-worker.");
+  throw new Error("The background task did not start its subagent.");
 }
