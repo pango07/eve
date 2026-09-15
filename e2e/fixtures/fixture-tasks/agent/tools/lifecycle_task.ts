@@ -7,9 +7,17 @@ import { getWorkflowMetadata } from "workflow";
 import { z } from "zod";
 import { lifecycleGate, publishLifecycleControl } from "../lib/lifecycle-control.js";
 
-type Input = { key: string; marker: "A" | "B"; child: boolean };
+type Input = {
+  key: string;
+  marker: "A" | "B";
+  child: boolean;
+  delayedAuthChild?: boolean;
+};
 
-async function execute({ key, marker, child }: Input, ctx: WorkflowToolContext): Promise<string> {
+async function execute(
+  { key, marker, child, delayedAuthChild }: Input,
+  ctx: WorkflowToolContext,
+): Promise<string> {
   "use workflow";
   const parentSessionId = ctx.session.id;
   await publishLifecycleControl(parentSessionId, key, {
@@ -19,7 +27,18 @@ async function execute({ key, marker, child }: Input, ctx: WorkflowToolContext):
     sessionId: parentSessionId,
     turnId: ctx.session.turn.id,
   });
-  if (child) {
+  if (delayedAuthChild === true) {
+    await lifecycleGate({
+      parentSessionId,
+      key,
+      marker,
+      sessionId: ctx.session.id,
+      turnId: ctx.session.turn.id,
+    });
+    await ctx.agent("auth-snapshot-worker", {
+      message: "Call snapshot_whoami exactly once.",
+    });
+  } else if (child) {
     try {
       await ctx.agent("lifecycle-worker", {
         message: JSON.stringify({ parentSessionId, key, marker }),
@@ -50,7 +69,12 @@ const tool: WorkflowToolDefinition<Input, string> = defineWorkflowTool({
   description:
     "Coordinate Alice and Bob's independently released background work for lifecycle checks.",
   execution: "background",
-  inputSchema: z.object({ key: z.string().uuid(), marker: z.enum(["A", "B"]), child: z.boolean() }),
+  inputSchema: z.object({
+    key: z.string().uuid(),
+    marker: z.enum(["A", "B"]),
+    child: z.boolean(),
+    delayedAuthChild: z.boolean().optional(),
+  }),
   execute,
 });
 

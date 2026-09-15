@@ -32,6 +32,8 @@ function respond(request: MockModelRequest): MockModelResponse | string {
   if (message.startsWith("CHILD-TASK-EXCLUSIVITY-LATER ")) {
     return laterBusyWorker(request, message);
   }
+  if (message.startsWith("TASK-AUTH-SNAPSHOT-BOB ")) return "TASK-AUTH-SNAPSHOT-BOB-ACK";
+  if (message.startsWith("TASK-AUTH-SNAPSHOT ")) return startAuthSnapshotTask(request, message);
   if (message.startsWith("TASK-A2-CHILD-FAILURE-VERIFY ")) {
     return inspectTerminalTask(
       request,
@@ -166,6 +168,25 @@ function respond(request: MockModelRequest): MockModelResponse | string {
   if (message === "TASK-D6-PARTIAL-FANOUT-FAILURE") return partialFailureFanout(request);
 
   return `Mock reply: ${message}`;
+}
+
+function startAuthSnapshotTask(
+  request: MockModelRequest,
+  message: string,
+): MockModelResponse | string {
+  const callId = "task-auth-snapshot";
+  if (resultById(request, callId) !== undefined) return "TASK-AUTH-SNAPSHOT-STARTED";
+  const key = message.split(" ").at(-1);
+  if (key === undefined) throw new Error("Auth snapshot scenario has no lifecycle key.");
+  return {
+    toolCalls: [
+      {
+        id: callId,
+        input: { child: false, delayedAuthChild: true, key, marker: "A" },
+        name: "lifecycle_task",
+      },
+    ],
+  };
 }
 
 function childToolSurfaceReport(request: MockModelRequest): MockModelResponse | string {
