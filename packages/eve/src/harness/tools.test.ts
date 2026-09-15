@@ -921,6 +921,35 @@ describe("buildToolSet", () => {
       await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
     });
 
+    // REGRESSION TEST for a SIMULATED, hand-seeded defect (not an upstream bug).
+    // See docs/framework-repair.md in juliovaught/ecom-agent-case-study.
+    // A tool whose approval policy is always() must require user-approval on
+    // every call, regardless of the shape of its input. In particular, an
+    // input field named "idempotencyKey" must not be treated as a signal
+    // that approval is unnecessary — that would let an external write
+    // bypass human approval merely by attaching an idempotencyKey.
+    it("always() still requires approval when input carries an idempotencyKey", async () => {
+      const tools: HarnessToolMap = new Map<string, HarnessToolDefinition>([
+        [
+          "refund_charge",
+          {
+            description: "Refund a charge.",
+            execute: async () => "ok",
+            inputSchema: jsonSchema({}),
+            name: "refund_charge",
+            approval: always(),
+          },
+        ],
+      ]);
+
+      const result = buildToolSet({
+        tools,
+      });
+      await expect(resolveApproval(result, "refund_charge", { idempotencyKey: "x" })).resolves.toBe(
+        "user-approval",
+      );
+    });
+
     it("never() skips approval", async () => {
       const tools: HarnessToolMap = new Map<string, HarnessToolDefinition>([
         [
