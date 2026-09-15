@@ -1,5 +1,13 @@
 # eve
 
+## 0.55.1
+
+### Patch Changes
+
+- 51998ab: Automatically ignore the self-modification integration's known optional compression packages instead of prompting for its recommended pnpm build policy.
+- 56cde32: Include conversations classified as private in local `eve dev` traces, including sessions authenticated with the developer's Vercel OIDC token.
+- 7ea3b7a: Classify anonymous eve channel sessions as `unknown` by default, so their content is not recorded in preview or production traces unless you mark the audience public explicitly. Also add `credentialOwner` for raw getToken-only auth and `caller` for audience callbacks while preserving existing `principalType` APIs, and fix token cache keys so user identifiers containing separators or percent sequences cannot collide.
+
 ## 0.55.0
 
 ### Minor Changes
