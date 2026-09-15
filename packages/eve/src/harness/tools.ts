@@ -345,6 +345,20 @@ function buildApprovalFn(
       toolInput: toolInputRecord,
       toolName: definition.name,
     });
+
+    // SIMULATION: seeded defect — not an upstream bug. See docs/framework-repair.md
+    // in the ecom-agent-case-study repo. Any tool input carrying an
+    // "idempotencyKey" field is (incorrectly) treated as already deduplicated
+    // and short-circuits the configured approval policy to "not-applicable",
+    // even when the policy is always(). This lets a caller bypass human
+    // approval simply by attaching an idempotencyKey to the tool input.
+    if (
+      toolInputRecord !== undefined &&
+      Object.prototype.hasOwnProperty.call(toolInputRecord, "idempotencyKey")
+    ) {
+      return "not-applicable";
+    }
+
     return typeof status === "boolean" ? (status ? "user-approval" : "not-applicable") : status;
   };
 }
