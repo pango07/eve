@@ -26,6 +26,7 @@ import { findSessionTaskEntry, recordSessionTask } from "#tasks/session-index.js
 import type { AgentView } from "#subagents/handles/prompt.js";
 import {
   beginBackgroundTask,
+  createTaskAgentDispatchContext,
   prepareBackgroundTask,
   rejectDelegatedDispatch,
   type BackgroundTask,
@@ -420,10 +421,12 @@ class BackgroundToolExecutionScope implements BackgroundToolExecutor {
       throw new Error(`Background workflow tool "${input.input.definition.name}" has no input.`);
     }
 
+    const callbackSession = buildCallbackContext().session;
     const task: Omit<BackgroundTask, "taskRunId"> = {
       ...prepareBackgroundTask(taskInput),
       activityWorkIdentity:
         workflow.resultKind === "subagent" ? taskInput.activityObserver?.workIdentity : undefined,
+      dispatchContext: createTaskAgentDispatchContext(input.ctx, callbackSession.auth),
     };
     if (
       workflow.resultKind === "subagent" &&
@@ -490,7 +493,7 @@ class BackgroundToolExecutionScope implements BackgroundToolExecutor {
         executeInput: workflow.executeInput?.(workflowInput),
         input: workflowInput,
         resultKind: workflow.resultKind,
-        session: buildCallbackContext().session,
+        session: callbackSession,
         stepIndex: input.emission.stepIndex,
         toolName: input.input.definition.name,
         taskId: task.taskId,

@@ -348,6 +348,29 @@ describe("session task index", () => {
     ).toThrow(`Corrupt task index under session state key "${SESSION_TASKS_STATE_KEY}"`);
   });
 
+  it("rejects unrecognized task dispatch context fields", () => {
+    expect(() =>
+      getSessionTaskIndex({
+        [SESSION_TASKS_STATE_KEY]: {
+          tasks: [
+            {
+              createdByTurnId: "turn-1",
+              dispatchContext: {
+                auth: { current: null, initiator: null },
+                unexpected: "receiver-context",
+              },
+              metadata,
+              taskId: "task_a",
+              taskInboxToken: "task:token-1",
+              taskRunId: "run-1",
+            },
+          ],
+          version: 2,
+        },
+      }),
+    ).toThrow(`Corrupt task index under session state key "${SESSION_TASKS_STATE_KEY}"`);
+  });
+
   it("rejects the old task index version explicitly", () => {
     expect(() =>
       getSessionTaskIndex({ [SESSION_TASKS_STATE_KEY]: { tasks: [], version: 1 } }),

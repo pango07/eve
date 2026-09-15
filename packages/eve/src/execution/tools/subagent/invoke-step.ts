@@ -56,6 +56,13 @@ import {
   flushAgentInvocationTraces,
   settleAgentInvocationTrace,
 } from "#tracing/agent-invocation-terminal.js";
+import {
+  AuthKey,
+  InitiatorAuthKey,
+  SessionDynamicSubagentSelectionsKey,
+  TurnDynamicSubagentSelectionsKey,
+} from "#context/keys.js";
+import type { TaskAgentDispatchContext } from "#tasks/session-index.js";
 
 export type AgentInvocationDispatchResult =
   | {
@@ -334,6 +341,7 @@ export async function dispatchTaskAgentInvocationStep(
   "use step";
 
   let activityWorkIdentity: ActivityWorkIdentityV1 | undefined;
+  let dispatchContext: TaskAgentDispatchContext | undefined;
   if (input.taskId !== undefined) {
     const session = await readDurableSession(input.sessionState);
     const entry = findSessionTaskEntry(session.state, input.taskId);
@@ -342,15 +350,90 @@ export async function dispatchTaskAgentInvocationStep(
     if (view === undefined || isTerminalTaskStatus(view.status)) {
       return { kind: "not-admitted", sessionState: input.sessionState };
     }
+    if (entry.dispatchContext === undefined) {
+      return missingTaskDispatchContext(input);
+    }
+    dispatchContext = entry.dispatchContext;
     if (entry.metadata.kind === "subagent") {
       activityWorkIdentity = entry.activityWorkIdentity;
     }
   }
-  return await dispatchAgentInvocation({
+  const dispatched = await dispatchAgentInvocation({
     ...input,
     activityWorkIdentity,
     callbackBaseUrl: resolveWorkflowCallbackBaseUrl(getWorkflowMetadata().url),
+    serializedContext:
+      dispatchContext === undefined
+        ? input.serializedContext
+        : applyTaskDispatchContext(input.serializedContext, dispatchContext),
   });
+  if (dispatchContext === undefined || dispatched.serializedContext === undefined)
+    return dispatched;
+  return {
+    ...dispatched,
+    serializedContext: restoreParentDispatchContext(
+      dispatched.serializedContext,
+      input.serializedContext,
+    ),
+  };
+}
+
+function missingTaskDispatchContext(
+  input: Parameters<typeof dispatchTaskAgentInvocationStep>[0],
+): TaskAgentInvocationDispatchResult {
+  return {
+    kind: "failed",
+    result: {
+      callId: input.request.invocationId,
+      isError: true,
+      kind: "subagent-result",
+      origin: "dispatch",
+      output: {
+        code: "AGENT_INVOCATION_AUTH_UNAVAILABLE",
+        message: "The background task has no captured authentication context.",
+      },
+      subagentName: input.request.input.target,
+    },
+    sessionState: input.sessionState,
+  };
+}
+
+function restoreParentDispatchContext(
+  dispatched: Record<string, unknown>,
+  parent: Record<string, unknown>,
+): Record<string, unknown> {
+  const restored = { ...dispatched };
+  for (const key of taskAgentDispatchContextKeys) {
+    if (Object.hasOwn(parent, key)) restored[key] = parent[key];
+    else delete restored[key];
+  }
+  return restored;
+}
+
+const taskAgentDispatchContextKeys = [
+  AuthKey.name,
+  InitiatorAuthKey.name,
+  SessionDynamicSubagentSelectionsKey.name,
+  TurnDynamicSubagentSelectionsKey.name,
+] as const;
+
+function applyTaskDispatchContext(
+  parent: Record<string, unknown>,
+  task: TaskAgentDispatchContext,
+): Record<string, unknown> {
+  const context = {
+    ...parent,
+    [AuthKey.name]: task.auth.current,
+    [InitiatorAuthKey.name]: task.auth.initiator,
+  };
+  for (const [key, value] of [
+    [SessionDynamicSubagentSelectionsKey.name, task.sessionDynamicSubagentSelections],
+    [TurnDynamicSubagentSelectionsKey.name, task.turnDynamicSubagentSelections],
+  ] as const) {
+    if (value === undefined) delete context[key];
+    else context[key] = value;
+  }
+  return context;
 }
 
 /** Applies an owner-scoped child settlement to the parent session's canonical state. */

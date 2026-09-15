@@ -5,6 +5,7 @@ import { parseActivityWorkIdentityV1, type ActivityWorkIdentityV1 } from "#proto
 import type { JsonValue } from "#shared/json.js";
 import type { TaskExecutorBinding } from "#tools/task.js";
 import { sameTaskMetadata, type TaskMetadata, type TaskView } from "#tasks/types.js";
+import { type DurableDynamicSubagentSelection, type SessionAuth } from "#context/keys.js";
 import {
   getTaskCohortId,
   SESSION_TASKS_STATE_KEY,
@@ -33,6 +34,7 @@ export { SESSION_TASKS_STATE_KEY } from "#tasks/session-task-cohorts.js";
  */
 export interface SessionTaskIndexEntry {
   readonly activityWorkIdentity?: ActivityWorkIdentityV1;
+  readonly dispatchContext?: TaskAgentDispatchContext;
   readonly taskId: string;
   readonly taskRunId: string;
   /** Immutable fallback once the owning workflow run expires. */
@@ -50,6 +52,38 @@ const taskMetadataSchema = z.looseObject({
   kind: z.string().min(1),
   name: z.string().min(1),
 }) as z.ZodType<TaskMetadata>;
+
+export interface TaskAgentDispatchContext {
+  readonly auth: SessionAuth;
+  readonly sessionDynamicSubagentSelections?: Readonly<
+    Record<string, DurableDynamicSubagentSelection>
+  >;
+  readonly turnDynamicSubagentSelections?: Readonly<
+    Record<string, DurableDynamicSubagentSelection>
+  >;
+}
+
+const sessionAuthContextSchema = z.strictObject({
+  attributes: z.record(z.string(), z.union([z.string(), z.array(z.string()).readonly()])),
+  authenticator: z.string(),
+  issuer: z.string().optional(),
+  principalId: z.string(),
+  principalType: z.string(),
+  subject: z.string().optional(),
+});
+const dynamicSubagentSelectionsSchema = z.record(
+  z.string(),
+  z.custom<DurableDynamicSubagentSelection>(),
+);
+
+const taskAgentDispatchContextSchema: z.ZodType<TaskAgentDispatchContext> = z.strictObject({
+  auth: z.strictObject({
+    current: sessionAuthContextSchema.nullable(),
+    initiator: sessionAuthContextSchema.nullable(),
+  }),
+  sessionDynamicSubagentSelections: dynamicSubagentSelectionsSchema.optional(),
+  turnDynamicSubagentSelections: dynamicSubagentSelectionsSchema.optional(),
+});
 
 const taskViewBaseShape = {
   executor: z
@@ -102,6 +136,7 @@ const sessionTaskIndexEntrySchema: z.ZodType<SessionTaskIndexEntry> = z.strictOb
   createdByStepIndex: z.number().int().nonnegative().optional(),
   createdByTurnId: z.string().min(1),
   cohortId: z.string().min(1).optional(),
+  dispatchContext: taskAgentDispatchContextSchema.optional(),
   executor: z
     .strictObject({
       data: z.record(z.string(), z.custom<JsonValue>()),
@@ -232,6 +267,7 @@ export function recordSessionTask(
       cohortId: previous.cohortId,
       createdByStepIndex: previous.createdByStepIndex,
       createdByTurnId: previous.createdByTurnId,
+      dispatchContext: previous.dispatchContext ?? entry.dispatchContext,
       terminalView: previous.terminalView ?? entry.terminalView,
     };
   } else {
